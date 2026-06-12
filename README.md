@@ -189,7 +189,7 @@ For a shorter command-generation check:
 ./submit_qsub_llm_hook_matrix.zsh \
   --nodes "$DYNAMIQ_NODES" \
   --combos wikitext:bert-large:bert-large-cased \
-  --aggregation-methods bf16,dynamiQ_aee_5bit \
+  --aggregation-methods bf16,dynamiQ_mee_5bit_dynamic_bitrate \
   --num-train-epochs 1 \
   --rails 1 \
   --dry-run
@@ -200,7 +200,7 @@ Remove `--dry-run` to submit the job.
 ## Important Parameters
 
 * `--nodes`: comma-separated host list. Use four nodes for the full paper-artifact reproduction. Each node launches two ranks.
-* `--aggregation-methods`: comma-separated communication hooks. The default is `bf16,MXfp8,fp4,fp6,zero,dynamiQ_aee_5bit,dynamiQ_mee_5bit,omnireduce,thc`.
+* `--aggregation-methods`: comma-separated communication hooks. The default is `bf16,MXfp8,fp4,fp6,zero,dynamiQ_aee_5bit,dynamiQ_mee_5bit,dynamiQ_mee_5bit_dynamic_bitrate,omnireduce,thc`.
 * `--rails`: number of RDMA rails. Use `--rails 1` for the reproduced paper-artifact configuration. Use `--rails 2` only on systems with two working RDMA interfaces.
 * `--iface0`, `--iface1`: network interface names for one-rail or two-rail RDMA runs.
 * `--dynamic-pipeline-rdma`: enables the pipelined dynamic AEE/MEE RDMA path.

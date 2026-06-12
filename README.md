@@ -246,4 +246,3 @@ This repository contains the testbed artifact for DynamiQ compression-aware dist
 * `rdma_comm_compress/`: RDMA/NVLink communication microbenchmarks and the staged GPU→CPU→RDMA→CPU→GPU transport used by the hooks.
 * `testbed_evaluation/`: end-to-end training evaluations for causal language modeling, MMLU, and Wikitext-103 masked language modeling.
 
-The refactored open-source artifact path is the testbed workflow above. The `simulations_llm/` tree is not required for the current testbed artifact reproduction.

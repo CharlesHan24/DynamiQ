@@ -108,6 +108,21 @@ If your datasets or HuggingFace models are stored elsewhere, pass the appropriat
 
 We first provide instructions on how to run the throughput performance evaluation in the `testbed_evaluation/` folder. These are used to reproduce the main experiments in `figure 6`.
 
+Before launching the testbed jobs, generate the fixed sampling-order files:
+
+```bash
+cd "$DYNAMIQ_HOME/testbed_evaluation"
+python gen_rand.py
+```
+
+This writes deterministic sampling-order files under:
+
+```bash
+testbed_evaluation/models/
+```
+
+In particular, `gen_rand.py` creates the `indices_2_3.pkl`, `indices_4_3.pkl`, and `indices_8_3.pkl` files used by the testbed training runs.
+
 ## Build the Kernels
 
 Build the CUDA compression extension and copy it into the testbed hook package:

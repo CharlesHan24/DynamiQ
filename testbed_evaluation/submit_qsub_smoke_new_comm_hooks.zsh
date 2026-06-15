@@ -46,6 +46,8 @@ CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-8.0;8.6;8.9}"
 
 SYNC_FLAG=""
 DRY_RUN=0
+LAUNCH_MODE="qsub"
+SSH_BIN="ssh"
 
 usage() {
   cat <<'EOF'
@@ -53,7 +55,7 @@ Usage:
   ./submit_qsub_smoke_new_comm_hooks.zsh [options]
 
 Options:
-  --nodes <csv>              Two or four chip-207 hosts. Default: chip-207-3,chip-207-4
+  --nodes <csv>              Two or four hostnames. Default: chip-207-3,chip-207-4,chip-207-5,chip-207-6
   --result-root <path>       Result root. Default: testbed_evaluation/smoke_job_results
   --aggregation-method <s>   Smoke hook method. Default: dynamiQ_aee_5bit
   --dtype <bf16|fp16|fp32>   Model/bucket dtype. Default: bf16
@@ -81,12 +83,15 @@ Options:
   --cuda-home <path>         CUDA toolkit root. Default: /share/apps/cuda-11.8
   --gcc-home <path>          GCC root. Default: /share/apps/gcc-8.3
   --cuda-arch-list <list>    TORCH_CUDA_ARCH_LIST. Default: 8.0;8.6;8.9
+  --launch-mode <qsub|direct>
+                            Launch via SGE qsub or direct ssh. Default: qsub
+  --ssh-bin <path>          SSH client for --launch-mode direct. Default: ssh
   --pe-gpu <n>               qsub -pe gpu value. Default: 2, matching requested qrsh flags
   --project <name>           SGE project. Default: cmic_hpc
   --h-rt <seconds>           SGE runtime limit. Default: 60000
   --tmem <amount>            SGE memory request. Default: 1K
   --sync                     Add qsub -sync y to the final node submission
-  --dry-run                  Print qsub commands without submitting
+  --dry-run                  Print launcher commands without submitting or running
 EOF
 }
 
@@ -96,6 +101,10 @@ while [[ $# -gt 0 ]]; do
       NODES_RAW="$2"; shift 2 ;;
     --result-root|--result_root)
       RESULT_ROOT="$2"; shift 2 ;;
+    --launch-mode)
+      LAUNCH_MODE="$2"; shift 2 ;;
+    --ssh-bin)
+      SSH_BIN="$2"; shift 2 ;;
     --aggregation-method|--aggregation_method)
       AGGREGATION_METHOD="$2"; shift 2 ;;
     --dtype)
@@ -181,8 +190,8 @@ NUM_NODES=${#nodes[@]}
 
 typeset -A seen_nodes
 for node in "${nodes[@]}"; do
-  if [[ ! "$node" =~ '^chip-207-[0-9]+$' ]]; then
-    echo "Unsupported node '$node'. Expected chip-207-*." >&2
+  if [[ "$node" == *[[:space:]]* ]]; then
+    echo "Invalid node '$node'. Hostnames must not contain whitespace." >&2
     exit 1
   fi
   if [[ -n "${seen_nodes[$node]:-}" ]]; then
@@ -191,6 +200,11 @@ for node in "${nodes[@]}"; do
   fi
   seen_nodes[$node]=1
 done
+
+if [[ "$LAUNCH_MODE" != "qsub" && "$LAUNCH_MODE" != "direct" ]]; then
+  echo "--launch-mode must be qsub or direct" >&2
+  exit 1
+fi
 
 if [[ "$RAILS" != "1" && "$RAILS" != "2" ]]; then
   echo "--rails must be 1 or 2" >&2
@@ -255,6 +269,8 @@ chmod +x "$RUN_DIR/build_eden_utils_command.zsh"
   echo "gid_index=$GID_INDEX"
   echo "gpu_pair_starts=$GPU_PAIR_STARTS"
   echo "max_used_mb=$MAX_USED_MB"
+  echo "launch_mode=$LAUNCH_MODE"
+  echo "ssh_bin=$SSH_BIN"
   echo "dynamic_aee_pipeline_rdma=$DYNAMIC_AEE_PIPELINE_RDMA"
   echo "ring_rdma_pipeline_chunk_mb=$RING_RDMA_PIPELINE_CHUNK_MB"
   echo "ring_rdma_pipeline_inflight=$RING_RDMA_PIPELINE_INFLIGHT"
@@ -269,31 +285,56 @@ chmod +x "$RUN_DIR/build_eden_utils_command.zsh"
   echo "build_command=$RUN_DIR/build_eden_utils_command.zsh"
 } > "$RUN_DIR/submit_metadata.log"
 
+quote_command() {
+  local quoted=""
+  local word=""
+  for word in "$@"; do
+    quoted+="${(q)word} "
+  done
+  print -r -- "${quoted% }"
+}
+
+DIRECT_PIDS=()
+DIRECT_LABELS=()
+
+wait_for_direct_batch() {
+  local batch_status=0
+  local idx=0
+  local pid=""
+  local label=""
+  local status=0
+
+  for (( idx = 1; idx <= ${#DIRECT_PIDS[@]}; idx++ )); do
+    pid="${DIRECT_PIDS[$idx]}"
+    label="${DIRECT_LABELS[$idx]}"
+    set +e
+    wait "$pid"
+    status=$?
+    set -e
+    if (( status != 0 )); then
+      echo "Direct launch failed for $label with status $status" >&2
+      if (( batch_status == 0 )); then
+        batch_status=$status
+      fi
+    fi
+  done
+
+  DIRECT_PIDS=()
+  DIRECT_LABELS=()
+  return "$batch_status"
+}
+
 submit_one() {
   local node_index="$1"
   local node="$2"
   local sync_this="$3"
   local name="hooksmk_${RUN_ID}_${node_index}"
-  local qsub_args
+  local -a node_args
+  local -a qsub_args
+  local -a direct_args
+  local remote_cmd=""
 
-  qsub_args=(
-    qsub
-    -cwd
-    -S /bin/zsh
-    -N "$name"
-    -P "$PROJECT"
-    -R y
-    -l "gpu=true,hostname=($node),tmem=$TMEM,h_rt=$H_RT"
-    -pe gpu "$PE_GPU"
-    -o "$RUN_DIR/node_${node_index}_${node}.qsub.out"
-    -e "$RUN_DIR/node_${node_index}_${node}.qsub.err"
-  )
-
-  if [[ -n "$sync_this" ]]; then
-    qsub_args+=(${=sync_this})
-  fi
-
-  qsub_args+=(
+  node_args=(
     "$NODE_SCRIPT"
     --repo-dir "$REPO_DIR"
     --run-dir "$RUN_DIR"
@@ -327,17 +368,49 @@ submit_one() {
   )
 
   if (( SKIP_GRAD_CHECK )); then
-    qsub_args+=(--skip-grad-check)
+    node_args+=(--skip-grad-check)
   fi
   if (( EXPECT_BUTTERFLY_RDMA )); then
-    qsub_args+=(--expect-butterfly-rdma)
+    node_args+=(--expect-butterfly-rdma)
   fi
 
-  print -r -- "${(q)qsub_args[@]}" >> "$RUN_DIR/qsub_commands.log"
-  if (( DRY_RUN )); then
-    print -r -- "${(q)qsub_args[@]}"
+  if [[ "$LAUNCH_MODE" == "qsub" ]]; then
+    qsub_args=(
+      qsub
+      -cwd
+      -S /bin/zsh
+      -N "$name"
+      -P "$PROJECT"
+      -R y
+      -l "gpu=true,hostname=($node),tmem=$TMEM,h_rt=$H_RT"
+      -pe gpu "$PE_GPU"
+      -o "$RUN_DIR/node_${node_index}_${node}.qsub.out"
+      -e "$RUN_DIR/node_${node_index}_${node}.qsub.err"
+    )
+
+    if [[ -n "$sync_this" ]]; then
+      qsub_args+=(${=sync_this})
+    fi
+
+    qsub_args+=("${node_args[@]}")
+
+    print -r -- "${(q)qsub_args[@]}" >> "$RUN_DIR/qsub_commands.log"
+    if (( DRY_RUN )); then
+      print -r -- "${(q)qsub_args[@]}"
+    else
+      "${qsub_args[@]}"
+    fi
   else
-    "${qsub_args[@]}"
+    remote_cmd="cd ${(q)REPO_DIR} && $(quote_command "${node_args[@]}")"
+    direct_args=("$SSH_BIN" "$node" "$remote_cmd")
+    print -r -- "${(q)direct_args[@]}" >> "$RUN_DIR/direct_commands.log"
+    if (( DRY_RUN )); then
+      print -r -- "${(q)direct_args[@]}"
+    else
+      "${direct_args[@]}" > "$RUN_DIR/node_${node_index}_${node}.direct.out" 2> "$RUN_DIR/node_${node_index}_${node}.direct.err" &
+      DIRECT_PIDS+=("$!")
+      DIRECT_LABELS+=("node=$node_index host=$node")
+    fi
   fi
 }
 
@@ -350,5 +423,14 @@ for (( idx = 0; idx < NUM_NODES; idx++ )); do
   submit_one "$idx" "$node" "$sync_this"
 done
 
+script_status=0
+if [[ "$LAUNCH_MODE" == "direct" && "$DRY_RUN" -eq 0 && ${#DIRECT_PIDS[@]} -gt 0 ]]; then
+  set +e
+  wait_for_direct_batch
+  script_status=$?
+  set -e
+fi
+
 echo "Run directory: $RUN_DIR"
 echo "Build command: $RUN_DIR/build_eden_utils_command.zsh"
+exit "$script_status"

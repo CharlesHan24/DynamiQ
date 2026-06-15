@@ -64,6 +64,8 @@ CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-8.0;8.6;8.9}"
 SYNC_EACH_COMBO=1
 CONTINUE_ON_FAILURE=0
 DRY_RUN=0
+LAUNCH_MODE="qsub"
+SSH_BIN="ssh"
 
 usage() {
   cat <<'EOF'
@@ -72,14 +74,16 @@ Usage:
 
 Runs four LLM test matrices by default:
   causal + llama, causal + gemma, mmlu + llama, and wikitext-103 + bert-large.
-Each matrix uses one qsub job per node, two GPUs per node, and walks the hook list
-sequentially inside the node runner.
+Each matrix launches one node runner per node, uses two GPUs per node, and walks the
+hook list sequentially inside the node runner.
 
 Options:
-  --nodes <csv>                 Two or four chip-207 hosts. Default: chip-207-3,chip-207-4
+  --nodes <csv>                 Two or four hostnames. Default: chip-207-3,chip-207-4,chip-207-5,chip-207-6
   --combos <csv>                task:label:model triples. Tasks: causal, mmlu, wikitext/maskedlm
   --aggregation-methods <csv>   Hook method list. Default: bf16,MXfp8,fp4,fp6,zero,dynamiQ_aee_5bit,dynamiQ_mee_5bit,omnireduce,thc
   --result-root <path>          Result root. Default: testbed_evaluation/llm_hook_matrix_results
+  --launch-mode <qsub|direct>   Launch via SGE qsub or direct ssh. Default: qsub
+  --ssh-bin <path>              SSH client for --launch-mode direct. Default: ssh
   --base-port <port>            First RDMA base port. Default: derived from timestamp
   --master-port <port>          First accelerate master port. Default: base-port + 90
   --method-port-stride <n>      Port stride between methods. Default: 200
@@ -119,7 +123,7 @@ Options:
   --tmem <amount>               SGE memory request. Default: 1K
   --continue-on-failure         Keep walking methods and later scenario matrices after failures
   --no-sync                     Submit all scenario matrices without waiting between them
-  --dry-run                     Print qsub commands without submitting
+  --dry-run                     Print launcher commands without submitting or running
 EOF
 }
 
@@ -129,6 +133,8 @@ while [[ $# -gt 0 ]]; do
     --combos) COMBOS_RAW="$2"; shift 2 ;;
     --aggregation-methods|--aggregation_methods) AGGREGATION_METHODS_RAW="$2"; shift 2 ;;
     --result-root|--result_root) RESULT_ROOT="$2"; shift 2 ;;
+    --launch-mode) LAUNCH_MODE="$2"; shift 2 ;;
+    --ssh-bin) SSH_BIN="$2"; shift 2 ;;
     --base-port) BASE_PORT="$2"; shift 2 ;;
     --master-port) MASTER_PORT="$2"; shift 2 ;;
     --method-port-stride) METHOD_PORT_STRIDE="$2"; shift 2 ;;
@@ -193,8 +199,8 @@ NUM_NODES=${#nodes[@]}
 
 typeset -A seen_nodes
 for node in "${nodes[@]}"; do
-  if [[ ! "$node" =~ '^chip-207-[0-9]+$' ]]; then
-    echo "Unsupported node '$node'. Expected chip-207-*." >&2
+  if [[ "$node" == *[[:space:]]* ]]; then
+    echo "Invalid node '$node'. Hostnames must not contain whitespace." >&2
     exit 1
   fi
   if [[ -n "${seen_nodes[$node]:-}" ]]; then
@@ -203,6 +209,11 @@ for node in "${nodes[@]}"; do
   fi
   seen_nodes[$node]=1
 done
+
+if [[ "$LAUNCH_MODE" != "qsub" && "$LAUNCH_MODE" != "direct" ]]; then
+  echo "--launch-mode must be qsub or direct" >&2
+  exit 1
+fi
 
 if [[ "$RAILS" != "1" && "$RAILS" != "2" ]]; then
   echo "--rails must be 1 or 2" >&2
@@ -260,6 +271,8 @@ chmod +x "$RUN_DIR/build_eden_utils_command.zsh"
   echo "combo_port_stride=$COMBO_PORT_STRIDE"
   echo "combos=$COMBOS_RAW"
   echo "aggregation_methods=$AGGREGATION_METHODS_RAW"
+  echo "launch_mode=$LAUNCH_MODE"
+  echo "ssh_bin=$SSH_BIN"
   echo "gpu_pair_starts=$GPU_PAIR_STARTS"
   echo "max_used_mb=$MAX_USED_MB"
   echo "numa_node=$NUMA_NODE"
@@ -296,6 +309,45 @@ chmod +x "$RUN_DIR/build_eden_utils_command.zsh"
   echo "build_command=$RUN_DIR/build_eden_utils_command.zsh"
 } > "$RUN_DIR/submit_metadata.log"
 
+quote_command() {
+  local quoted=""
+  local word=""
+  for word in "$@"; do
+    quoted+="${(q)word} "
+  done
+  print -r -- "${quoted% }"
+}
+
+DIRECT_PIDS=()
+DIRECT_LABELS=()
+
+wait_for_direct_batch() {
+  local batch_status=0
+  local idx=0
+  local pid=""
+  local label=""
+  local status=0
+
+  for (( idx = 1; idx <= ${#DIRECT_PIDS[@]}; idx++ )); do
+    pid="${DIRECT_PIDS[$idx]}"
+    label="${DIRECT_LABELS[$idx]}"
+    set +e
+    wait "$pid"
+    status=$?
+    set -e
+    if (( status != 0 )); then
+      echo "Direct launch failed for $label with status $status" >&2
+      if (( batch_status == 0 )); then
+        batch_status=$status
+      fi
+    fi
+  done
+
+  DIRECT_PIDS=()
+  DIRECT_LABELS=()
+  return "$batch_status"
+}
+
 submit_one() {
   local combo_index="$1"
   local task="$2"
@@ -309,26 +361,12 @@ submit_one() {
   local sync_this="${10}"
   local safe_model="${model_label//[^A-Za-z0-9_.-]/_}"
   local name="llmhm_${combo_index}_${task}_${safe_model}_${node_index}"
-  local qsub_args
+  local -a node_args
+  local -a qsub_args
+  local -a direct_args
+  local remote_cmd=""
 
-  qsub_args=(
-    qsub
-    -cwd
-    -S /bin/zsh
-    -N "$name"
-    -P "$PROJECT"
-    -R y
-    -l "gpu=true,hostname=($node),tmem=$TMEM,h_rt=$H_RT"
-    -pe gpu "$PE_GPU"
-    -o "$combo_run_dir/node_${node_index}_${node}.qsub.out"
-    -e "$combo_run_dir/node_${node_index}_${node}.qsub.err"
-  )
-
-  if (( sync_this )); then
-    qsub_args+=(-sync y)
-  fi
-
-  qsub_args+=(
+  node_args=(
     "$NODE_SCRIPT"
     --repo-dir "$REPO_DIR"
     --run-dir "$combo_run_dir"
@@ -376,30 +414,63 @@ submit_one() {
   )
 
   if [[ -n "$LEARNING_RATE" ]]; then
-    qsub_args+=(--learning-rate "$LEARNING_RATE")
+    node_args+=(--learning-rate "$LEARNING_RATE")
   fi
   if [[ -n "$PER_DEVICE_TRAIN_BATCH_SIZE" ]]; then
-    qsub_args+=(--per-device-train-batch-size "$PER_DEVICE_TRAIN_BATCH_SIZE")
+    node_args+=(--per-device-train-batch-size "$PER_DEVICE_TRAIN_BATCH_SIZE")
   fi
   if [[ -n "$TO_SHRIMP" ]]; then
-    qsub_args+=(--to-shrimp "$TO_SHRIMP")
+    node_args+=(--to-shrimp "$TO_SHRIMP")
   fi
   if [[ -n "$EXTRA_TRAIN_ARGS" ]]; then
-    qsub_args+=(--extra-train-args "$EXTRA_TRAIN_ARGS")
+    node_args+=(--extra-train-args "$EXTRA_TRAIN_ARGS")
   fi
   if (( CONTINUE_ON_FAILURE )); then
-    qsub_args+=(--continue-on-failure)
+    node_args+=(--continue-on-failure)
   fi
 
-  print -r -- "${(q)qsub_args[@]}" >> "$RUN_DIR/qsub_commands.log"
-  if (( DRY_RUN )); then
-    print -r -- "${(q)qsub_args[@]}"
+  if [[ "$LAUNCH_MODE" == "qsub" ]]; then
+    qsub_args=(
+      qsub
+      -cwd
+      -S /bin/zsh
+      -N "$name"
+      -P "$PROJECT"
+      -R y
+      -l "gpu=true,hostname=($node),tmem=$TMEM,h_rt=$H_RT"
+      -pe gpu "$PE_GPU"
+      -o "$combo_run_dir/node_${node_index}_${node}.qsub.out"
+      -e "$combo_run_dir/node_${node_index}_${node}.qsub.err"
+    )
+
+    if (( sync_this )); then
+      qsub_args+=(-sync y)
+    fi
+
+    qsub_args+=("${node_args[@]}")
+
+    print -r -- "${(q)qsub_args[@]}" >> "$RUN_DIR/qsub_commands.log"
+    if (( DRY_RUN )); then
+      print -r -- "${(q)qsub_args[@]}"
+    else
+      "${qsub_args[@]}"
+    fi
   else
-    "${qsub_args[@]}"
+    remote_cmd="cd ${(q)REPO_DIR} && $(quote_command "${node_args[@]}")"
+    direct_args=("$SSH_BIN" "$node" "$remote_cmd")
+    print -r -- "${(q)direct_args[@]}" >> "$RUN_DIR/direct_commands.log"
+    if (( DRY_RUN )); then
+      print -r -- "${(q)direct_args[@]}"
+    else
+      "${direct_args[@]}" > "$combo_run_dir/node_${node_index}_${node}.direct.out" 2> "$combo_run_dir/node_${node_index}_${node}.direct.err" &
+      DIRECT_PIDS+=("$!")
+      DIRECT_LABELS+=("combo=$combo_index task=$task model=$model_label node=$node_index host=$node")
+    fi
   fi
 }
 
 combo_index=0
+script_status=0
 for raw_combo in ${(s:,:)COMBOS_RAW}; do
   combo="${raw_combo//[[:space:]]/}"
   [[ -n "$combo" ]] || continue
@@ -455,14 +526,43 @@ for raw_combo in ${(s:,:)COMBOS_RAW}; do
     set -e
     if (( node_status != 0 )); then
       echo "Node-$idx qsub failed for combo $combo_index with status $node_status" >&2
+      if (( script_status == 0 )); then
+        script_status=$node_status
+      fi
       if (( ! CONTINUE_ON_FAILURE )); then
         exit "$node_status"
       fi
     fi
   done
 
+  if [[ "$LAUNCH_MODE" == "direct" && "$DRY_RUN" -eq 0 && "$SYNC_EACH_COMBO" -eq 1 ]]; then
+    set +e
+    wait_for_direct_batch
+    combo_status=$?
+    set -e
+    if (( combo_status != 0 )); then
+      if (( script_status == 0 )); then
+        script_status=$combo_status
+      fi
+      if (( ! CONTINUE_ON_FAILURE )); then
+        exit "$combo_status"
+      fi
+    fi
+  fi
+
   combo_index=$(( combo_index + 1 ))
 done
 
+if [[ "$LAUNCH_MODE" == "direct" && "$DRY_RUN" -eq 0 && "$SYNC_EACH_COMBO" -eq 0 && ${#DIRECT_PIDS[@]} -gt 0 ]]; then
+  set +e
+  wait_for_direct_batch
+  direct_status=$?
+  set -e
+  if (( direct_status != 0 && script_status == 0 )); then
+    script_status=$direct_status
+  fi
+fi
+
 echo "Run directory: $RUN_DIR"
 echo "Build command: $RUN_DIR/build_eden_utils_command.zsh"
+exit "$script_status"

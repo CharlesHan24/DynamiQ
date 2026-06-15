@@ -16,4 +16,5 @@ def generate_random_sampling_order(nsamples, nranks, nepochs):
     pickle.dump(all_orders, open("./models/indices_{}_{}.pkl".format(nranks, nepochs), "wb"))
 
 generate_random_sampling_order(51200, 8, 3)
+generate_random_sampling_order(51200, 4, 3)
 generate_random_sampling_order(51200, 2, 3)

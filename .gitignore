@@ -225,3 +225,4 @@ rdma_comm_compress/nccl_rdma_p2p_bench/
 *.pkl
 **/llm_hook_**
 *.pkl
+**/simulation_matrix_results/**

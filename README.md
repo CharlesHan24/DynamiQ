@@ -1,5 +1,10 @@
 # DynamiQ_SIGCOMM_Artifact
 
+This repository contains both:
+
+* the multi-node testbed evaluation used for the SIGCOMM artifact reproduction under `testbed_evaluation/`, and
+* the LLM simulation workloads under `simulations_llm/`.
+
 ## Testbed Assumptions
 
 This artifact targets the testbed configuration used for the SIGCOMM evaluation:
@@ -61,6 +66,17 @@ Override these to your own paths:
 --cuda-arch-list <arch-list>
 ```
 
+The same submit wrappers can be used in two ways:
+
+* `--launch-mode qsub` (default): submit one SGE job per node.
+* `--launch-mode direct`: `ssh` into each selected host and invoke the same `qsub_*_node.zsh` launcher directly.
+
+For `--launch-mode direct`, ensure that:
+
+* the repository is visible at the same `$DYNAMIQ_HOME` path on every selected node,
+* the launching machine can `ssh` to each selected node without interactive prompts, and
+* the conda/CUDA/GCC paths passed to the wrapper are valid on every selected node.
+
 For an interactive sanity check:
 
 ```bash
@@ -86,6 +102,11 @@ MODEL_CACHE=/cluster/project2/gcreduce_data/pretrained_models/language_model
 ```
 
 If your datasets or HuggingFace models are stored elsewhere, pass the appropriate cache overrides through `--extra-train-args`.
+
+
+# Testbed evaluation
+
+We first provide instructions on how to run the throughput performance evaluation in the `testbed_evaluation/` folder. These are used to reproduce the main experiments in `figure 6`.
 
 ## Build the Kernels
 
@@ -131,6 +152,22 @@ cd "$DYNAMIQ_HOME/testbed_evaluation"
   --sync
 ```
 
+If you are not using SGE, launch the same smoke test directly over `ssh` with:
+
+```bash
+cd "$DYNAMIQ_HOME/testbed_evaluation"
+
+./submit_qsub_smoke_new_comm_hooks.zsh \
+  --launch-mode direct \
+  --nodes "$DYNAMIQ_NODES" \
+  --aggregation-method dynamiQ_aee_5bit \
+  --steps 1 \
+  --numel 1048576 \
+  --rails 1
+```
+
+In direct mode, the wrapper uses `ssh` to invoke `qsub_smoke_new_comm_hooks_node.zsh` on each selected host and waits for those node-level launchers to finish.
+
 The reproduced artifact configuration uses `--rails 1`.
 
 On systems with two working RDMA interfaces, the two-rail path can be exercised with:
@@ -161,6 +198,22 @@ cd "$DYNAMIQ_HOME/testbed_evaluation"
   --pipeline-chunk-mb 8 \
   --pipeline-inflight 2
 ```
+
+If you are not using SGE, launch the same evaluation directly over `ssh` with:
+
+```bash
+cd "$DYNAMIQ_HOME/testbed_evaluation"
+
+./submit_qsub_llm_hook_matrix.zsh \
+  --launch-mode direct \
+  --nodes "$DYNAMIQ_NODES" \
+  --rails 1 \
+  --dynamic-pipeline-rdma 1 \
+  --pipeline-chunk-mb 8 \
+  --pipeline-inflight 2
+```
+
+In direct mode, the wrapper uses `ssh` to invoke `qsub_llm_hook_matrix_node.zsh` on each selected host. The per-node `ssh` launcher logs are written as `*.direct.out` and `*.direct.err`, while the per-method training logs remain under the usual run directory.
 
 By default, this runs four task/model combinations:
 
@@ -197,9 +250,12 @@ For a shorter command-generation check:
 
 Remove `--dry-run` to submit the job.
 
+The same `--dry-run` flag also works with `--launch-mode direct`; in that case the wrapper prints the exact `ssh` commands instead of running them.
+
 ## Important Parameters
 
 * `--nodes`: comma-separated host list. Use four nodes for the full paper-artifact reproduction. Each node launches two ranks.
+* `--launch-mode`: `qsub` submits through SGE; `direct` launches the same node-level scripts over `ssh`.
 * `--aggregation-methods`: comma-separated communication hooks. The default is `bf16,MXfp8,fp4,fp6,zero,dynamiQ_aee_5bit,dynamiQ_mee_5bit,dynamiQ_mee_5bit_dynamic_bitrate,omnireduce,thc`.
 * `--rails`: number of RDMA rails. Use `--rails 1` for the reproduced paper-artifact configuration. Use `--rails 2` only on systems with two working RDMA interfaces.
 * `--iface0`, `--iface1`: network interface names for one-rail or two-rail RDMA runs.
@@ -238,11 +294,32 @@ For two-rail experiments on a system with two RDMA interfaces:
 
 See `rdma_comm_compress/README.md` for the ring all-reduce topology, bandwidth metrics, and debugging notes.
 
+## Simulation Jobs
+
+The repository also includes simulation-based LLM experiments under `simulations_llm/`. These jobs are used for the end-to-end simulated train without caring about the performance (speed), getting the round-to-accuracy results. These results, together with the testbed evaluation where we can measure the time-per-round data, will be used to reproduce the end-to-end time-to-accuracy (TTA) figures such as `figure 4` and `figure 5`.
+
+For the full simulation workflow, including:
+
+* required pre-generated correlated-random data,
+* `qsub` and direct `ssh` launch modes,
+* worker-count and node-count conventions, and
+* concrete command-line launch examples,
+
+see [simulations_llm/README.md](simulations_llm/README.md).
+
+Typical simulation entry points from the repository root are:
+
+```bash
+python simulations_llm/gen_correlated_rand.py
+simulations_llm/submit_qsub_simulation_matrix.zsh --dry-run
+simulations_llm/submit_qsub_simulation_matrix.zsh --launch-mode direct --dry-run
+```
+
 ## Scope of This Artifact
 
-This repository contains the testbed artifact for DynamiQ compression-aware distributed training.
+This repository contains the testbed and simulation artifact code for DynamiQ compression-aware distributed training.
 
 * `cuda_kernels/`: CUDA compression and decompression kernels used by the DynamiQ communication hooks.
 * `rdma_comm_compress/`: RDMA/NVLink communication microbenchmarks and the staged GPU→CPU→RDMA→CPU→GPU transport used by the hooks.
+* `simulations_llm/`: simulation-based distributed LLM training experiments and their launch scripts.
 * `testbed_evaluation/`: end-to-end training evaluations for causal language modeling, MMLU, and Wikitext-103 masked language modeling.
-

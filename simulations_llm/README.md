@@ -14,6 +14,7 @@ The same submitter also supports:
 
 - `--launch-mode qsub` (default): submit one SGE job per node.
 - `--launch-mode direct`: `ssh` into each selected host and invoke `simulations_llm/qsub_simulation_matrix_node.zsh` directly.
+- `--topology butterfly`: automatically run butterfly variants of the selected aggregation methods.
 
 For `--launch-mode direct`, ensure that:
 
@@ -140,6 +141,16 @@ simulations_llm/submit_qsub_simulation_matrix.zsh \
   --nodes chip-207-3,chip-207-4,chip-207-5,chip-207-6
 ```
 
+Run the same experiment on the butterfly all-reduce topology:
+
+```zsh
+simulations_llm/submit_qsub_simulation_matrix.zsh \
+  --topology butterfly \
+  --workers 8 \
+  --procs-per-node 2 \
+  --nodes chip-207-3,chip-207-4,chip-207-5,chip-207-6
+```
+
 Pass extra arguments directly to the training script:
 
 ```zsh
@@ -217,6 +228,32 @@ For causal LM and MMLU, the launch script passes `--num_train_epochs 1` when `wo
 
 For BERT masked LM, the launch script passes `--num_train_epochs 8` when `workers <= 4`, and `--num_train_epochs 15` when `workers == 8`, plus `--fixed_lr_epochs 6`.
 
+## Butterfly All-Reduce
+
+Set:
+
+```text
+--topology butterfly
+```
+
+to map the selected methods onto their butterfly variants automatically. For example:
+
+- `bf16` becomes `bf16_butterfly`
+- `omnireduce` becomes `omnireduce_butterfly`
+- `dynamiQ_mee_5bit_dynamic_bitrate` becomes `dynamiQ_mee_5bit_dynamic_bitrate_butterfly`
+
+To reproduce the butterfly-allreduce simulation runs corresponding to Figure 9, run:
+
+```zsh
+simulations_llm/submit_qsub_simulation_matrix.zsh \
+  --topology butterfly \
+  --workers 2,4,8 \
+  --combos causal:llama:meta-llama/Llama-3.2-1B,causal:gemma:gemma,mmlu:llama:meta-llama/Llama-3.2-1B,wikitext:bert-large:bert-large-cased \
+  --aggregation-methods bf16,omnireduce,thc,dynamiQ_mee_5bit_dynamic_bitrate
+```
+
+If you are not using SGE, add `--launch-mode direct` to the same command.
+
 ## Useful Options
 
 ```text
@@ -224,6 +261,7 @@ For BERT masked LM, the launch script passes `--num_train_epochs 8` when `worker
 --workers <csv>               Worker counts to run. Default: 2,4,8.
 --combos <csv>                task:label:model triples.
 --aggregation-methods <csv>   Aggregation methods. Default: dynamiQ_mee_5bit_dynamic_bitrate.
+--topology <ring|butterfly>   Select the communication topology.
 --result-root <path>          Where run directories are created.
 --launch-mode <qsub|direct>   Launch through SGE or directly over ssh.
 --procs-per-node <n>          Local ranks per qsub job. Default: 1.

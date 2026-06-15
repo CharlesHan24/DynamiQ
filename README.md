@@ -183,6 +183,27 @@ cd "$DYNAMIQ_HOME/testbed_evaluation"
 
 In direct mode, the wrapper uses `ssh` to invoke `qsub_smoke_new_comm_hooks_node.zsh` on each selected host and waits for those node-level launchers to finish.
 
+To exercise the butterfly all-reduce path in the smoke test, add `--topology butterfly`.
+For example:
+
+```bash
+cd "$DYNAMIQ_HOME/testbed_evaluation"
+
+./submit_qsub_smoke_new_comm_hooks.zsh \
+  --topology butterfly \
+  --nodes "$DYNAMIQ_NODES" \
+  --aggregation-method dynamiQ_mee_5bit \
+  --steps 1 \
+  --numel 1048576 \
+  --rails 1 \
+  --expect-butterfly-rdma \
+  --sync
+```
+
+With `--topology butterfly`, the launcher automatically rewrites methods such as
+`bf16`, `omnireduce`, `thc`, or `dynamiQ_mee_5bit_dynamic_bitrate` to their
+`*_butterfly` variants if needed.
+
 The reproduced artifact configuration uses `--rails 1`.
 
 On systems with two working RDMA interfaces, the two-rail path can be exercised with:
@@ -267,10 +288,43 @@ Remove `--dry-run` to submit the job.
 
 The same `--dry-run` flag also works with `--launch-mode direct`; in that case the wrapper prints the exact `ssh` commands instead of running them.
 
+## Butterfly All-Reduce
+
+The testbed launchers also expose:
+
+```bash
+--topology butterfly
+```
+
+This keeps the usual method names at the command line and maps them to butterfly
+variants internally, for example:
+
+* `bf16` → `bf16_butterfly`
+* `omnireduce` → `omnireduce_butterfly`
+* `dynamiQ_mee_5bit_dynamic_bitrate` → `dynamiQ_mee_5bit_dynamic_bitrate_butterfly`
+
+To reproduce the butterfly-allreduce testbed runs corresponding to Table 5, run:
+
+```bash
+cd "$DYNAMIQ_HOME/testbed_evaluation"
+
+./submit_qsub_llm_hook_matrix.zsh \
+  --topology butterfly \
+  --nodes "$DYNAMIQ_NODES" \
+  --aggregation-methods bf16,omnireduce,thc,dynamiQ_mee_5bit_dynamic_bitrate \
+  --rails 1 \
+  --dynamic-pipeline-rdma 0 \
+  --pipeline-chunk-mb 8 \
+  --pipeline-inflight 2
+```
+
+If you are not using SGE, add `--launch-mode direct` to the same command.
+
 ## Important Parameters
 
 * `--nodes`: comma-separated host list. Use four nodes for the full paper-artifact reproduction. Each node launches two ranks.
 * `--launch-mode`: `qsub` submits through SGE; `direct` launches the same node-level scripts over `ssh`.
+* `--topology`: `ring` keeps the default topology; `butterfly` rewrites the selected methods to butterfly all-reduce variants.
 * `--aggregation-methods`: comma-separated communication hooks. The default is `bf16,MXfp8,fp4,fp6,zero,dynamiQ_aee_5bit,dynamiQ_mee_5bit,dynamiQ_mee_5bit_dynamic_bitrate,omnireduce,thc`. To reproduce figure 7 and table 4 with varied bitrate for DynamiQ, simply change `5bit` to `3bit`, `4bit`, `5bit`, `6bit` and `7bit`.
 * `--rails`: number of RDMA rails. Use `--rails 1` for the reproduced paper-artifact configuration. Use `--rails 2` only on systems with two working RDMA interfaces.
 * `--iface0`, `--iface1`: network interface names for one-rail or two-rail RDMA runs.
@@ -317,8 +371,9 @@ For the full simulation workflow, including:
 
 * required pre-generated correlated-random data,
 * `qsub` and direct `ssh` launch modes,
+* ring and butterfly topology selection,
 * worker-count and node-count conventions, and
-* concrete command-line launch examples,
+* concrete command-line launch examples, including the butterfly-allreduce runs for Figure 9,
 
 see [simulations_llm/README.md](simulations_llm/README.md).
 

@@ -1191,7 +1191,11 @@ def wrapper_hook(state, bucket):
         else:
             reduce_future = P2P_dynamiQ_fixed_percentage_hook(state, bucket)
     else:
-        raise ValueError(f"Unsupported aggregation method: {aggregation_method}")
+        raise ValueError(
+            "Unsupported aggregation method: "
+            f"{aggregation_method}. Use bf16, fp16, MXfp8, fp4/fp6, omnireduce, or dynamiQ methods, "
+            "optionally with a _butterfly suffix."
+        )
 
     if not track_error:
         return reduce_future

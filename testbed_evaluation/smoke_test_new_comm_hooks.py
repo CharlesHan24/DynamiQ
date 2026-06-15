@@ -215,7 +215,7 @@ def select_hook(aggregation_method: str) -> Callable:
         return P2P_slicing_compress_hook
     raise ValueError(
         "unsupported aggregation_method for this smoke test; use bf16, thc, fp8, fp4/fp6/zero, "
-        "omnireduce, or dynamiQ_aee_*/dynamiQ_mee_*"
+        "omnireduce, or dynamiQ_aee_*/dynamiQ_mee_*, optionally with a _butterfly suffix"
     )
 
 

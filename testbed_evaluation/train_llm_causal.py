@@ -307,7 +307,8 @@ def select_comm_hook(aggregation_method):
         return P2P_slicing_compress_hook
     raise ValueError(
         "Unsupported aggregation_method for train_llm_causal.py. "
-        "Use bf16, fp8/MXfp8, fp4/fp6/zero, thc, omnireduce, or dynamiQ_aee/dynamiQ_mee."
+        "Use bf16, fp8/MXfp8, fp4/fp6/zero, thc, omnireduce, or dynamiQ_aee/dynamiQ_mee, "
+        "optionally with a _butterfly suffix."
     )
 
 

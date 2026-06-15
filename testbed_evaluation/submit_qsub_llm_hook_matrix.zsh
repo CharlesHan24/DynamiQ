@@ -66,6 +66,7 @@ CONTINUE_ON_FAILURE=0
 DRY_RUN=0
 LAUNCH_MODE="qsub"
 SSH_BIN="ssh"
+TOPOLOGY="ring"
 
 usage() {
   cat <<'EOF'
@@ -81,6 +82,7 @@ Options:
   --nodes <csv>                 Two or four hostnames. Default: chip-207-3,chip-207-4,chip-207-5,chip-207-6
   --combos <csv>                task:label:model triples. Tasks: causal, mmlu, wikitext/maskedlm
   --aggregation-methods <csv>   Hook method list. Default: bf16,MXfp8,fp4,fp6,zero,dynamiQ_aee_5bit,dynamiQ_mee_5bit,omnireduce,thc
+  --topology <ring|butterfly>   Communication topology. Default: ring
   --result-root <path>          Result root. Default: testbed_evaluation/llm_hook_matrix_results
   --launch-mode <qsub|direct>   Launch via SGE qsub or direct ssh. Default: qsub
   --ssh-bin <path>              SSH client for --launch-mode direct. Default: ssh
@@ -132,6 +134,7 @@ while [[ $# -gt 0 ]]; do
     --nodes) NODES_RAW="$2"; shift 2 ;;
     --combos) COMBOS_RAW="$2"; shift 2 ;;
     --aggregation-methods|--aggregation_methods) AGGREGATION_METHODS_RAW="$2"; shift 2 ;;
+    --topology) TOPOLOGY="$2"; shift 2 ;;
     --result-root|--result_root) RESULT_ROOT="$2"; shift 2 ;;
     --launch-mode) LAUNCH_MODE="$2"; shift 2 ;;
     --ssh-bin) SSH_BIN="$2"; shift 2 ;;
@@ -215,6 +218,32 @@ if [[ "$LAUNCH_MODE" != "qsub" && "$LAUNCH_MODE" != "direct" ]]; then
   exit 1
 fi
 
+if [[ "$TOPOLOGY" != "ring" && "$TOPOLOGY" != "butterfly" ]]; then
+  echo "--topology must be ring or butterfly" >&2
+  exit 1
+fi
+
+normalize_aggregation_methods_csv() {
+  local raw="$1"
+  local -a methods
+  local method=""
+  local normalized=""
+
+  methods=(${(s:,:)raw})
+  for method in "${methods[@]}"; do
+    method="${method//[[:space:]]/}"
+    [[ -n "$method" ]] || continue
+    if [[ "$TOPOLOGY" == "butterfly" && "$method" != *butterfly* ]]; then
+      method="${method}_butterfly"
+    fi
+    normalized+="${method},"
+  done
+
+  print -r -- "${normalized%,}"
+}
+
+AGGREGATION_METHODS_RAW="$(normalize_aggregation_methods_csv "$AGGREGATION_METHODS_RAW")"
+
 if [[ "$RAILS" != "1" && "$RAILS" != "2" ]]; then
   echo "--rails must be 1 or 2" >&2
   exit 1
@@ -271,6 +300,7 @@ chmod +x "$RUN_DIR/build_eden_utils_command.zsh"
   echo "combo_port_stride=$COMBO_PORT_STRIDE"
   echo "combos=$COMBOS_RAW"
   echo "aggregation_methods=$AGGREGATION_METHODS_RAW"
+  echo "topology=$TOPOLOGY"
   echo "launch_mode=$LAUNCH_MODE"
   echo "ssh_bin=$SSH_BIN"
   echo "gpu_pair_starts=$GPU_PAIR_STARTS"

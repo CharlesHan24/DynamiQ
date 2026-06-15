@@ -46,6 +46,7 @@ CONTINUE_ON_FAILURE=0
 DRY_RUN=0
 LAUNCH_MODE="qsub"
 SSH_BIN="ssh"
+TOPOLOGY="ring"
 
 usage() {
   cat <<'EOF'
@@ -61,6 +62,7 @@ Important options:
   --workers <csv>               Worker counts to run. Default: 2,4,8
   --combos <csv>                task:label:model triples.
   --aggregation-methods <csv>   Simulation aggregation methods.
+  --topology <ring|butterfly>   Communication topology. Default: ring
   --result-root <path>          Output root. Default: simulations_llm/simulation_matrix_results
   --launch-mode <qsub|direct>   Launch via SGE qsub or direct ssh. Default: qsub
   --ssh-bin <path>              SSH client for --launch-mode direct. Default: ssh
@@ -79,6 +81,7 @@ while [[ $# -gt 0 ]]; do
     --workers) WORKERS_RAW="$2"; shift 2 ;;
     --combos) COMBOS_RAW="$2"; shift 2 ;;
     --aggregation-methods|--aggregation_methods) AGGREGATION_METHODS_RAW="$2"; shift 2 ;;
+    --topology) TOPOLOGY="$2"; shift 2 ;;
     --result-root|--result_root) RESULT_ROOT="$2"; shift 2 ;;
     --launch-mode) LAUNCH_MODE="$2"; shift 2 ;;
     --ssh-bin) SSH_BIN="$2"; shift 2 ;;
@@ -149,6 +152,32 @@ if [[ "$LAUNCH_MODE" != "qsub" && "$LAUNCH_MODE" != "direct" ]]; then
   exit 1
 fi
 
+if [[ "$TOPOLOGY" != "ring" && "$TOPOLOGY" != "butterfly" ]]; then
+  echo "--topology must be ring or butterfly" >&2
+  exit 1
+fi
+
+normalize_aggregation_methods_csv() {
+  local raw="$1"
+  local -a methods
+  local method=""
+  local normalized=""
+
+  methods=(${(s:,:)raw})
+  for method in "${methods[@]}"; do
+    method="${method//[[:space:]]/}"
+    [[ -n "$method" ]] || continue
+    if [[ "$TOPOLOGY" == "butterfly" && "$method" != *butterfly* ]]; then
+      method="${method}_butterfly"
+    fi
+    normalized+="${method},"
+  done
+
+  print -r -- "${normalized%,}"
+}
+
+AGGREGATION_METHODS_RAW="$(normalize_aggregation_methods_csv "$AGGREGATION_METHODS_RAW")"
+
 workers_list=()
 for raw_workers in ${(s:,:)WORKERS_RAW}; do
   workers="${raw_workers//[[:space:]]/}"
@@ -179,6 +208,7 @@ mkdir -p "$RUN_DIR"
   echo "procs_per_node=$PROCS_PER_NODE"
   echo "combos=$COMBOS_RAW"
   echo "aggregation_methods=$AGGREGATION_METHODS_RAW"
+  echo "topology=$TOPOLOGY"
   echo "launch_mode=$LAUNCH_MODE"
   echo "ssh_bin=$SSH_BIN"
   echo "base_port=$BASE_PORT"

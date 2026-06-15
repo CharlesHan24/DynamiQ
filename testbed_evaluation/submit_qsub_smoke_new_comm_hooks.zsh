@@ -48,6 +48,7 @@ SYNC_FLAG=""
 DRY_RUN=0
 LAUNCH_MODE="qsub"
 SSH_BIN="ssh"
+TOPOLOGY="ring"
 
 usage() {
   cat <<'EOF'
@@ -58,6 +59,8 @@ Options:
   --nodes <csv>              Two or four hostnames. Default: chip-207-3,chip-207-4,chip-207-5,chip-207-6
   --result-root <path>       Result root. Default: testbed_evaluation/smoke_job_results
   --aggregation-method <s>   Smoke hook method. Default: dynamiQ_aee_5bit
+  --topology <ring|butterfly>
+                            Communication topology. Default: ring
   --dtype <bf16|fp16|fp32>   Model/bucket dtype. Default: bf16
   --steps <n>                Backward passes. Default: 3
   --numel <n>                Synthetic parameter elements. Default: 262144
@@ -101,6 +104,8 @@ while [[ $# -gt 0 ]]; do
       NODES_RAW="$2"; shift 2 ;;
     --result-root|--result_root)
       RESULT_ROOT="$2"; shift 2 ;;
+    --topology)
+      TOPOLOGY="$2"; shift 2 ;;
     --launch-mode)
       LAUNCH_MODE="$2"; shift 2 ;;
     --ssh-bin)
@@ -206,6 +211,15 @@ if [[ "$LAUNCH_MODE" != "qsub" && "$LAUNCH_MODE" != "direct" ]]; then
   exit 1
 fi
 
+if [[ "$TOPOLOGY" != "ring" && "$TOPOLOGY" != "butterfly" ]]; then
+  echo "--topology must be ring or butterfly" >&2
+  exit 1
+fi
+
+if [[ "$TOPOLOGY" == "butterfly" && "$AGGREGATION_METHOD" != *butterfly* ]]; then
+  AGGREGATION_METHOD="${AGGREGATION_METHOD}_butterfly"
+fi
+
 if [[ "$RAILS" != "1" && "$RAILS" != "2" ]]; then
   echo "--rails must be 1 or 2" >&2
   exit 1
@@ -254,6 +268,7 @@ chmod +x "$RUN_DIR/build_eden_utils_command.zsh"
   echo "master_port=$MASTER_PORT"
   echo "base_port=$BASE_PORT"
   echo "aggregation_method=$AGGREGATION_METHOD"
+  echo "topology=$TOPOLOGY"
   echo "dtype=$DTYPE"
   echo "steps=$STEPS"
   echo "numel=$NUMEL"

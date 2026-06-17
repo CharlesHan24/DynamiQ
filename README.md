@@ -412,4 +412,4 @@ This repository contains the testbed and simulation artifact code for DynamiQ co
 * `simulations_llm/`: simulation-based distributed LLM training experiments and their launch scripts.
 * `testbed_evaluation/`: end-to-end training evaluations for causal language modeling, MMLU, and Wikitext-103 masked language modeling.
 
-[WIP] Figures and tables that have been reproduced using this refactored code: `Figure 4, 5, 6`, `Table 3`, `Figure 7`, `Table 4, 5`, `Figure 9 and 10`.  
+Figures and tables that are reproducible using this repository: `Figure 4, 5, 6`, `Table 3`, `Figure 7`, `Table 4, 5`, `Figure 9 and 10`.  

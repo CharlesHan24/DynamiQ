@@ -10,7 +10,7 @@ This repository contains both:
 This artifact targets the testbed configuration used for the SIGCOMM evaluation:
 
 * 4 GPU nodes.
-* 2 NVIDIA RTX A6000 Ada-class GPUs per node.
+* 2 NVIDIA RTX A6000 GPUs per node.
 * The two GPUs on each node are connected by an intra-node NVLink link reported as `NV4`.
 * The reproduced paper-artifact configuration uses one 100 Gbps RDMA NIC rail per node.
 * Each node launches 2 ranks, so the full 4-node evaluation runs with `WORLD_SIZE=8`.
